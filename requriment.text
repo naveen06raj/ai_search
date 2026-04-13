@@ -1,0 +1,7 @@
+langchain
+langgraph
+langchain-google-vertexai
+google-cloud-aiplatform
+python-dotenv
+fastmcp
+langchain_mcp_adapters
