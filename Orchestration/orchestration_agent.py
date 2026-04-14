@@ -17,6 +17,9 @@ class OrchestrationState(TypedDict):
     defect_action: str 
     response: Dict[str, Any]  # Add response field
 
+    token: str
+    login_id: int
+
 
 # ------------------ LLM ------------------
 llm = get_chat_model()
@@ -41,7 +44,9 @@ def orchestration_node(state: OrchestrationState) -> OrchestrationState:
         ],
         "route": route,
         "defect_action": state.get("defect_action", ""),
-        "response": state.get("response", {})
+        "response": state.get("response", {}),
+        "token": state.get("token"),
+        "login_id": state.get("login_id")
     }
 
 
@@ -71,7 +76,9 @@ async def defect_domain_node(state: OrchestrationState):
 
     defect_router_input = {
         "user_query": state["user_query"],
-        "chat_history": state.get("chat_history", [])
+        "chat_history": state.get("chat_history", []),
+        "token": state.get("token"),
+        "login_id": state.get("login_id")
     }
 
     defect_result = await defect_router_graph.ainvoke(defect_router_input)
@@ -187,48 +194,48 @@ graph = workflow.compile()
 print("✅ Orchestration State Graph compiled successfully")
 
 
-# =====================================================
-# TEST FUNCTION
-# =====================================================
-if __name__ == "__main__":
-    import asyncio
-    from langchain_core.messages import HumanMessage
-    from pprint import pprint
+# # =====================================================
+# # TEST FUNCTION
+# # =====================================================
+# if __name__ == "__main__":
+#     import asyncio
+#     from langchain_core.messages import HumanMessage
+#     from pprint import pprint
 
-    test_cases = [
-        "Show open defects for block 6"
-    ]
+#     test_cases = [
+#         "Show open defects for block 6"
+#     ]
 
-    async def run_tests():
-        for query in test_cases:
-            print("\n" + "="*60)
-            print(f"🧪 TESTING: {query}")
-            print("="*60)
+#     async def run_tests():
+#         for query in test_cases:
+#             print("\n" + "="*60)
+#             print(f"🧪 TESTING: {query}")
+#             print("="*60)
             
-            result = await graph.ainvoke({
-                "user_query": query,
-                "chat_history": [HumanMessage(content="Hi")]
-            })
+#             result = await graph.ainvoke({
+#                 "user_query": query,
+#                 "chat_history": [HumanMessage(content="Hi")]
+#             })
 
-            print(f"\n📊 RESULTS:")
-            print(f"Route: {result.get('route')}")
-            print(f"Defect Action: {result.get('defect_action')}")
-            print(f"Response keys: {result.get('response', {}).keys()}")
+#             print(f"\n📊 RESULTS:")
+#             print(f"Route: {result.get('route')}")
+#             print(f"Defect Action: {result.get('defect_action')}")
+#             print(f"Response keys: {result.get('response', {}).keys()}")
             
-            # Display table if available
-            if "table" in result.get("response", {}):
-                response = result["response"]
-                print(f"\n📋 TABLE SUMMARY:")
-                print(f"Total records: {response.get('total')}")
-                print(f"Columns: {response['table']['columns']}")
-                print(f"Number of rows: {len(response['table']['rows'])}")
+#             # Display table if available
+#             if "table" in result.get("response", {}):
+#                 response = result["response"]
+#                 print(f"\n📋 TABLE SUMMARY:")
+#                 print(f"Total records: {response.get('total')}")
+#                 print(f"Columns: {response['table']['columns']}")
+#                 print(f"Number of rows: {len(response['table']['rows'])}")
                 
-                # Show first 3 records
-                print(f"\n📝 First 3 records:")
-                for i, record in enumerate(response['table']['rows'][:3], 1):
-                    print(f"  {i}. Ticket: {record.get('ticket_no')} | Status: {record.get('status')} | Block: {record.get('block')}")
+#                 # Show first 3 records
+#                 print(f"\n📝 First 3 records:")
+#                 for i, record in enumerate(response['table']['rows'][:3], 1):
+#                     print(f"  {i}. Ticket: {record.get('ticket_no')} | Status: {record.get('status')} | Block: {record.get('block')}")
             
-            if "chart" in result.get("response", {}):
-                print(f"\n📊 CHART DATA: {result['response']['chart']['data']}")
+#             if "chart" in result.get("response", {}):
+#                 print(f"\n📊 CHART DATA: {result['response']['chart']['data']}")
 
-    asyncio.run(run_tests())
+#     asyncio.run(run_tests())

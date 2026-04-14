@@ -17,6 +17,8 @@ from .Agents.defect_search_agent import graph as defect_search_graph
 class DefectRouterState(TypedDict):
     user_query: str
     chat_history: List[BaseMessage]
+    token: str
+    login_id: str
     defect_action: str
     response: Dict[str, Any]  # This will hold the final response
 
@@ -75,16 +77,16 @@ async def defect_search_node(state: DefectRouterState) -> DefectRouterState:
     # Call the defect search graph
     search_result = await defect_search_graph.ainvoke({
         "user_query": state["user_query"],
-        "chat_history": state.get("chat_history", [])
+        "chat_history": state.get("chat_history", []),
+        "token": state.get("token"),
+        "login_id": state.get("login_id")
     })
     
     print(f"✅ [Defect Router] Search completed, found {search_result.get('response', {}).get('total', 0)} results")
     
     return {
-        "user_query": state["user_query"],
-        "chat_history": state.get("chat_history", []),
-        "defect_action": state["defect_action"],
-        "response": search_result.get("response", {})
+    **state,
+    "response": search_result.get("response", {})
     }
 
 

@@ -1,17 +1,14 @@
 """
-Defect MCP Server
-- FastMCP
-- HTTP (streamable) transport
-- Safe schema
-- Agent compatible
+Defect MCP Server (Production Ready)
+- No hardcoded token
+- Multi-user support
+- Cloud Run compatible
 """
 
 import os
-import requests
-import uvicorn
 from typing import Optional, List, Dict
-from pydantic import BaseModel, Field
 
+from pydantic import BaseModel
 from mcp.server.fastmcp import FastMCP
 
 
@@ -26,16 +23,9 @@ fastmcp = FastMCP("defect-mcp")
 # =====================================================
 API_URL = "https://aerea.panzerplayground.com/api/ops/v4/defectssearch"
 
-BEARER_TOKEN = os.getenv(
-    "AEREA_BEARER_TOKEN",
-    "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6ImE3NGFjN2JiODk1Yjc5ZTI1MTVhMGYxYTE1NzcyMzkxZGUwNWU0YTk5YmE3NjYwNzgxYTgwYmZmZjkyMTQ0MzMzYTRjNWQ1YWEyZjM3OGFhIn0.eyJhdWQiOiIxIiwianRpIjoiYTc0YWM3YmI4OTViNzllMjUxNWEwZjFhMTU3NzIzOTFkZTA1ZTRhOTliYTc2NjA3ODFhODBiZmZmOTIxNDQzMzNhNGM1ZDVhYTJmMzc4YWEiLCJpYXQiOjE3NjU3OTQyMzQsIm5iZiI6MTc2NTc5NDIzNCwiZXhwIjoxNzk3MzMwMjM0LCJzdWIiOiIyMjY4Iiwic2NvcGVzIjpbXX0.DjfP0UAiSvA7tYmgCjlqfxwxF27acEEHCYYLD8tFYfBKoU4EVye4-439pkuu6mfj3i3KbQi4WjAcs44WFEEpPHF_X3kVrqykhP87D8a_PnyFkYjgjINdY2a4dWKY_pdrX-O7B6L118Lm8I6VB_IVdlDthJJEjMGB4qVvgD-_J_y3eEZvjWvWEqobXu_uWPoB58sXrsCOiGFhXilDZrt8Gm66Wdj-jzh0X_4qUGK4oIIBH5_0WNCiAUJYbojBYaNXAab4BqohLA0IU-I7HZYrBss9sasT9kQfc-rZ8AoAvhlgEmNfNjS23oVNyUOgjuZ5L80vvW6gZgkSJvlHv8PzvqN0b_3XjFY09cCRfGFNtEao0hCQeQiH7FXhHWRdg1tLgyB1mauJ0b8DBcpbyYeOzIKti5KQzVv9o5Y-gTp4tFRASJ9DE8Zee5sjwhOoHBW5I17XCVHygEJdGnqr8RPrcHKxESBxgkluZdaqk5aoGFG0TMOAutu99ihx39SgRjHg9jH_doVZiRIC4GAZl5ERljpXJuAOjFbliLJx7SdHX-B9vmnTzIg_sTG-BHpt5rWqfg1aVcQ3LWcUqjc0oDMUhq95hlbEMknY0ZtXZX6f20_IsX_aPffTsCtMenKXpv3uGhXtnHkx9YRCJMMXlcMb84Ct0WnXqlNsQCCqNwjUXeQ"
-)
-
-LOGIN_ID = os.getenv("AEREA_LOGIN_ID", "222")
-
 
 # =====================================================
-# STATUS MAPS (✔ FIXED)
+# STATUS MAPS
 # =====================================================
 STATUS_MAP = {
     0: "OPEN",
@@ -54,9 +44,11 @@ INSPECTION_STATUS_MAP = {
 
 
 # =====================================================
-# INPUT MODEL
+# INPUT MODEL (UPDATED)
 # =====================================================
 class DefectSearchInput(BaseModel):
+    query: Optional[str] = None
+
     fromdate: Optional[str] = None
     todate: Optional[str] = None
     unit: Optional[str] = None
@@ -65,6 +57,10 @@ class DefectSearchInput(BaseModel):
     location: Optional[str] = None
     type: Optional[str] = None
     block_no: Optional[int] = None
+
+    # 🔥 IMPORTANT (dynamic user data)
+    login_id: int
+    token: str
 
 
 # =====================================================
@@ -93,25 +89,41 @@ class DefectSearchResponse(BaseModel):
 
 
 # =====================================================
-# MCP TOOL
+# MCP TOOL (UPDATED)
 # =====================================================
 @fastmcp.tool()
-def search_defects(input: DefectSearchInput) -> DefectSearchResponse:
-    payload = input.model_dump(exclude_none=True)
-    payload["login_id"] = int(LOGIN_ID)
+async def search_defects(input: DefectSearchInput) -> DefectSearchResponse:
+    import httpx
+
+    # 🔥 Extract dynamic user data
+    token = input.token
+    login_id = input.login_id
+
+    if not token:
+        raise ValueError("User token is required")
+
+    # Build payload
+    payload = input.model_dump(
+        exclude_none=True,
+        exclude={"token", "login_id", "query"}
+    )
+
+    payload["login_id"] = login_id
 
     headers = {
-        "Authorization": f"Bearer {BEARER_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
 
-    response = requests.post(
-        API_URL,
-        json=payload,
-        headers=headers,
-        timeout=20,
-    )
+    # Call backend API
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            API_URL,
+            json=payload,
+            headers=headers,
+            timeout=20,
+        )
 
     if response.status_code != 200:
         raise RuntimeError(f"API ERROR {response.status_code}: {response.text}")
@@ -125,12 +137,12 @@ def search_defects(input: DefectSearchInput) -> DefectSearchResponse:
         lists = item.get("lists", {})
         inspection = item.get("inspection")
 
-        # ---- STATUS ----
+        # STATUS
         status_code = lists.get("status")
         status_text = STATUS_MAP.get(status_code, "UNKNOWN")
         status_summary[status_text] = status_summary.get(status_text, 0) + 1
 
-        # ---- INSPECTION STATUS ----
+        # INSPECTION STATUS
         inspection_status_code = (
             inspection.get("status")
             if inspection
@@ -165,19 +177,4 @@ def search_defects(input: DefectSearchInput) -> DefectSearchResponse:
         total=len(records),
         records=records,
         status_summary=status_summary,
-    )
-
-
-# =====================================================
-# RUN SERVER
-# =====================================================
-if __name__ == "__main__":
-    print("🚀 Starting Defect MCP Server")
-    print("🔗 MCP URL: http://127.0.0.1:8002/mcp")
-    print("🛠️ Tools: search_defects")
-
-    uvicorn.run(
-        fastmcp.streamable_http_app,
-        host="127.0.0.1",
-        port=8002,
     )
