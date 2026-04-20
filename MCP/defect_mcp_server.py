@@ -22,6 +22,7 @@ fastmcp = FastMCP("defect-mcp")
 # CONFIG
 # =====================================================
 API_URL = "https://aerea.panzerplayground.com/api/ops/v4/defectssearch"
+FEEDBACK_API_URL = "https://aerea.panzerplayground.com/api/ops/v4/searchfeedback"
 
 
 # =====================================================
@@ -87,6 +88,18 @@ class DefectSearchResponse(BaseModel):
     records: List[DefectRecord]
     status_summary: Dict[str, int]
 
+class FeedbackSearchInput(BaseModel):
+    fromdate: Optional[str] = None
+    todate: Optional[str] = None
+    unit: Optional[str] = None
+    ticket: Optional[str] = None
+    status: Optional[int] = None
+    category: Optional[int] = None
+    building: Optional[str] = None
+    filter: Optional[str] = None
+
+    login_id: int
+    token: str
 
 # =====================================================
 # MCP TOOL (UPDATED)
@@ -178,3 +191,43 @@ async def search_defects(input: DefectSearchInput) -> DefectSearchResponse:
         records=records,
         status_summary=status_summary,
     )
+
+@fastmcp.tool()
+async def search_feedback(input: FeedbackSearchInput):
+    import httpx
+
+    token = input.token
+
+    if not token:
+        raise ValueError("User token is required")
+
+    # CLEAN PAYLOAD
+    payload = input.model_dump(exclude_none=True)
+    payload.pop("token", None)
+
+    print(f"\n📤 [MCP] Feedback Payload: {payload}")
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            FEEDBACK_API_URL,
+            data=payload,
+            headers=headers,
+            timeout=20,
+        )
+
+    print(f"📥 [MCP] Status Code: {response.status_code}")
+
+    if response.status_code != 200:
+        print(f"❌ [MCP] Error Response: {response.text}")
+        raise RuntimeError(f"API ERROR {response.status_code}: {response.text}")
+
+    result = response.json()
+
+    print(f"📦 [MCP] Response Count: {len(result.get('data', []))}")
+
+    return result

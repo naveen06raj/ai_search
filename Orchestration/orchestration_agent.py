@@ -6,6 +6,7 @@ from langgraph.graph import StateGraph, END
 from Core.model_registry import get_chat_model
 from Orchestration.orchestration_prompts import get_route_prompt, get_greeting_prompt
 from Domain.Defect_Module.defect_router_agent import graph as defect_router_graph
+from Domain.Feedback_Module.feedback_router_agent import graph as feedback_router_graph
 
 
 
@@ -14,7 +15,8 @@ class OrchestrationState(TypedDict):
     user_query: str
     chat_history: List[BaseMessage]
     route: str
-    defect_action: str 
+    defect_action: str
+    feedback_action: str 
     response: Dict[str, Any]  # Add response field
 
     token: str
@@ -44,6 +46,7 @@ def orchestration_node(state: OrchestrationState) -> OrchestrationState:
         ],
         "route": route,
         "defect_action": state.get("defect_action", ""),
+        "feedback_action": state.get("feedback_action", ""),
         "response": state.get("response", {}),
         "token": state.get("token"),
         "login_id": state.get("login_id")
@@ -57,6 +60,7 @@ def route_decision(state: OrchestrationState):
     if route in {
         "defect_domain",
         "device_management_domain",
+        "feedback_domain",
         "facility_booking_domain",
         "general_response",
         "clarify_query",
@@ -148,6 +152,26 @@ def error_node(state):
     print(f"\n❌ [Orchestrator] Error handling")
     return {**state, "response": {"message": "I apologize, but I encountered an error processing your request."}}
 
+async def feedback_domain_node(state: OrchestrationState):
+    print(f"\n🚀 [Orchestrator] Entering Feedback Domain for: {state['user_query']}")
+
+    feedback_input = {
+        "user_query": state["user_query"],
+        "chat_history": state.get("chat_history", []),
+        "token": state.get("token"),
+        "login_id": state.get("login_id")
+    }
+
+    result = await feedback_router_graph.ainvoke(feedback_input)
+
+    print(f"✅ [Orchestrator] Feedback Domain completed")
+
+    return {
+        **state,
+        "feedback_action": result.get("feedback_action", ""),
+        "response": result.get("response", {})
+    }
+
 
 # ------------------ GRAPH ------------------
 workflow = StateGraph(OrchestrationState)
@@ -155,6 +179,7 @@ workflow = StateGraph(OrchestrationState)
 workflow.add_node("orchestrator", orchestration_node)
 workflow.add_node("defect_domain", defect_domain_node)
 workflow.add_node("device_management_domain", device_management_domain_node)
+workflow.add_node("feedback_domain", feedback_domain_node)
 workflow.add_node("facility_booking_domain", facility_booking_domain_node)
 workflow.add_node("general_response", general_response_node)
 workflow.add_node("clarify_query", clarify_query_node)
@@ -167,6 +192,7 @@ workflow.add_conditional_edges(
     {
         "defect_domain": "defect_domain",
         "device_management_domain": "device_management_domain",
+        "feedback_domain": "feedback_domain",
         "facility_booking_domain": "facility_booking_domain",
         "general_response": "general_response",
         "clarify_query": "clarify_query",
@@ -179,6 +205,7 @@ workflow.add_conditional_edges(
 for node in [
     "defect_domain",
     "device_management_domain",
+    "feedback_domain",
     "facility_booking_domain",
     "general_response",
     "clarify_query",

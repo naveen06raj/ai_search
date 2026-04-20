@@ -10,6 +10,7 @@ def get_route_prompt():
         "Available domains:\n"
         "- defect_domain : issues, defects, inspections, maintenance complaints\n"
         "- device_management_domain : devices, sensors, hardware, IoT, status\n"
+        "- feedback_domain : feedback, complaints, user reports, submissions\n"
         "- facility_booking_domain : room booking, amenities, reservations\n"
         "- general_response : greetings or general questions\n"
         "- clarify_query : missing or unclear information\n"

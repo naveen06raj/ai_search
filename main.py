@@ -1,4 +1,5 @@
 # main.py
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,38 +7,53 @@ from typing import Dict, Any, Optional
 import uvicorn
 from datetime import datetime
 import traceback
+import logging
+import asyncio
 
+# MCP
 from MCP.defect_mcp_server import fastmcp
+
+# 🔥 Move import here (IMPORTANT for performance)
+from Orchestration.orchestration_agent import graph as orchestration_graph
+
+
+# =====================================================
+# LOGGING (Production Ready)
+# =====================================================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 # =====================================================
 # FASTAPI APP
 # =====================================================
-
 app = FastAPI(
-    title="Defect AI API",
-    description="Backend API for Defect Search and Management",
-    version="2.0.0"
+    title="AI Search API",
+    description="Backend API for Defect & Feedback AI Search",
+    version="2.1.0"
 )
+
 
 # =====================================================
 # CORS
 # =====================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # change later for production
+    allow_origins=["*"],   # ⚠️ change in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 # =====================================================
-# REQUEST / RESPONSE MODELS (UPDATED)
+# REQUEST / RESPONSE MODELS
 # =====================================================
 
 class SearchRequest(BaseModel):
     query: str
-    token: str              # 🔥 REQUIRED
-    login_id: int           # 🔥 REQUIRED
+    token: str
+    login_id: int
 
     filters: Optional[Dict[str, Any]] = None
     user_id: Optional[str] = None
@@ -59,8 +75,8 @@ class SearchResponse(BaseModel):
 @app.get("/")
 async def root():
     return {
-        "service": "Defect AI API",
-        "version": "2.0.0",
+        "service": "AI Search API",
+        "version": "2.1.0",
         "status": "running"
     }
 
@@ -78,22 +94,16 @@ async def health_check():
 
 
 # =====================================================
-# 🔥 MAIN SEARCH API (FIXED)
+# 🔥 MAIN SEARCH API
 # =====================================================
 
 @app.post("/api/search", response_model=SearchResponse)
-async def search_defects(request: SearchRequest):
+async def search_ai(request: SearchRequest):
     try:
-        print(f"\n{'='*60}")
-        print(f"🔍 QUERY: {request.query}")
-        print(f"{'='*60}")
+        logger.info(f"🔍 QUERY: {request.query}")
 
         start_time = datetime.now()
 
-        # 🔥 Import here
-        from Orchestration.orchestration_agent import graph as orchestration_graph
-
-        # 🔥 IMPORTANT FIX: pass token + login_id
         input_data = {
             "user_query": request.query,
             "chat_history": [],
@@ -101,24 +111,28 @@ async def search_defects(request: SearchRequest):
             "login_id": request.login_id
         }
 
-        # 🔥 Execute AI
-        result = await orchestration_graph.ainvoke(input_data)
+        # 🔥 Timeout protection
+        result = await asyncio.wait_for(
+            orchestration_graph.ainvoke(input_data),
+            timeout=15
+        )
 
         execution_time = (datetime.now() - start_time).total_seconds()
 
-        response_data = result.get("response", {})
+        # 🔥 Safe response
+        response_data = result.get("response") or {}
 
         metadata = {
             "query": request.query,
             "execution_time_seconds": round(execution_time, 2),
             "route": result.get("route"),
-            "action": result.get("defect_action"),
-            "record_count": response_data.get("total", 0),
+            "action": result.get("defect_action") or result.get("feedback_action"),
+            "record_count": response_data.get("total", len(response_data.get("records", []))),
             "user_id": request.user_id,
             "session_id": request.session_id
         }
 
-        print(f"✅ Found {response_data.get('total', 0)} records in {execution_time:.2f}s")
+        logger.info(f"✅ Found {metadata['record_count']} records in {execution_time:.2f}s")
 
         return SearchResponse(
             success=True,
@@ -128,9 +142,17 @@ async def search_defects(request: SearchRequest):
             timestamp=datetime.now().isoformat()
         )
 
+    except asyncio.TimeoutError:
+        logger.error("⏱️ Request Timeout")
+
+        raise HTTPException(
+            status_code=504,
+            detail="Request timeout. Please try again."
+        )
+
     except Exception as e:
-        print(f"\n❌ ERROR: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"❌ ERROR: {str(e)}")
+        logger.error(traceback.format_exc())
 
         raise HTTPException(
             status_code=500,
@@ -149,7 +171,8 @@ async def get_example_queries():
         "examples": [
             "Show open defects for block 6",
             "Find defects with ticket number 25121137801",
-            "Show all defects submitted in 2024"
+            "Show all feedback for block 6",        # ✅ Added feedback example
+            "Show complaints related to lift"
         ]
     }
 
