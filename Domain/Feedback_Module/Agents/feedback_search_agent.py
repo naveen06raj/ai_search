@@ -104,23 +104,7 @@ async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
         k: None if v in ["null", None, ""] else v
         for k, v in filters.items()
     }
-     category_map = {
-        "security": 1,
-        "plumbing": 2,
-        "lift": 32,
-        "cleaning": 5,
-        "electrical": 6
-    }
-
-    cat = cleaned_filters.get("category")
-
-    if isinstance(cat, str):
-        mapped = category_map.get(cat.lower())
-        if mapped:
-            cleaned_filters["category"] = mapped
-        else:
-            cleaned_filters["category"] = None
-
+    
 
     print(f"🧹 Cleaned Filters: {cleaned_filters}")
     print("🔍 Calling Feedback API...")
