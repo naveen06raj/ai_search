@@ -126,7 +126,7 @@ async def search_ai(request: SearchRequest):
             "query": request.query,
             "execution_time_seconds": round(execution_time, 2),
             "route": result.get("route"),
-            "action": result.get("defect_action") or result.get("feedback_action"),
+            "action": result.get("defect_action") or result.get("feedback_action")or result.get("facility_action"),
             "record_count": response_data.get("total", len(response_data.get("records", []))),
             "user_id": request.user_id,
             "session_id": request.session_id

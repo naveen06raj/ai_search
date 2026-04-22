@@ -6,6 +6,9 @@ from langgraph.graph import StateGraph, END
 from pydantic import BaseModel
 import asyncio
 
+from datetime import datetime, timedelta
+import re
+
 from Core.model_registry import get_chat_model
 
 # =====================================================
@@ -86,12 +89,55 @@ STATUS_MAP = {
 }
 
 # =====================================================
+# DATE PARSER (ADDED)
+# =====================================================
+def parse_dates_from_query(query: str):
+    query = query.lower()
+    today = datetime.today()
+
+    fromdate = None
+    todate = None
+
+    if any(word in query for word in ["today", "now", "still"]):
+        todate = today
+
+    if "yesterday" in query:
+        fromdate = today - timedelta(days=1)
+        todate = fromdate
+
+    if "last 7 days" in query:
+        fromdate = today - timedelta(days=7)
+        todate = today
+
+    if "last month" in query:
+        first_day_this_month = today.replace(day=1)
+        last_day_last_month = first_day_this_month - timedelta(days=1)
+        fromdate = last_day_last_month.replace(day=1)
+        todate = last_day_last_month
+
+    match = re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*(\d{4})", query)
+    if match:
+        month_str, year = match.groups()
+        month_map = {
+            "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+            "may": 5, "jun": 6, "jul": 7, "aug": 8,
+            "sep": 9, "oct": 10, "nov": 11, "dec": 12
+        }
+        month = month_map[month_str]
+        fromdate = datetime(int(year), month, 1)
+
+    return {
+        "fromdate": fromdate.strftime("%Y-%m-%d") if fromdate else None,
+        "todate": todate.strftime("%Y-%m-%d") if todate else None
+    }
+
+# =====================================================
 # NODE
 # =====================================================
 async def defect_search_node(state: DefectSearchState) -> Dict[str, Any]:
     from MCP.defect_mcp_server import search_defects
 
-    # 🔥 STEP 1: LLM CALL (ASYNC)
+    # 🔥 STEP 1: LLM CALL
     chain = prompt | llm | parser
 
     llm_output = await chain.ainvoke({
@@ -107,6 +153,25 @@ async def defect_search_node(state: DefectSearchState) -> Dict[str, Any]:
     for key, value in filters.items():
         cleaned_filters[key] = None if value in ["null", None] else value
 
+    # =====================================================
+    # 🔥 DATE FIX (ADDED ONLY THIS)
+    # =====================================================
+    date_fix = parse_dates_from_query(state["user_query"])
+
+    if date_fix["fromdate"]:
+        cleaned_filters["fromdate"] = date_fix["fromdate"]
+
+    if date_fix["todate"]:
+        cleaned_filters["todate"] = date_fix["todate"]
+
+    # VALIDATE RANGE
+    fd = cleaned_filters.get("fromdate")
+    td = cleaned_filters.get("todate")
+
+    if fd and td and fd > td:
+        print("⚠️ Fixing invalid date range")
+        cleaned_filters["todate"] = datetime.today().strftime("%Y-%m-%d")
+
     # Convert block_no to int
     if isinstance(cleaned_filters.get("block_no"), str):
         try:
@@ -119,7 +184,6 @@ async def defect_search_node(state: DefectSearchState) -> Dict[str, Any]:
     print(f"🔍 [Defect Search] Calling internal function: search_defects")
 
     try:
-        # 🔥 STEP 2: API CALL (ASYNC)
         result_obj = await search_defects(
             DefectSearchInput(
                 **cleaned_filters,
@@ -199,4 +263,4 @@ workflow.add_edge("defect_search", END)
 
 graph = workflow.compile()
 
-print("✅ Defect Search Agent compiled (FIXED)")
+print("✅ Defect Search Agent compiled (DATE FIXED)")

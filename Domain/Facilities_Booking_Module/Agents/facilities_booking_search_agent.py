@@ -4,6 +4,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel
+import httpx
 from datetime import datetime, timedelta
 import re
 
@@ -13,7 +14,7 @@ from Core.model_registry import get_chat_model
 # =====================================================
 # STATE
 # =====================================================
-class FeedbackSearchState(TypedDict):
+class FacilitiesBookingSearchState(TypedDict):
     user_query: str
     chat_history: List[BaseMessage]
     response: Dict[str, Any]
@@ -22,7 +23,7 @@ class FeedbackSearchState(TypedDict):
 
 
 # =====================================================
-# LLM
+# LLM + PROMPT
 # =====================================================
 llm = get_chat_model()
 
@@ -31,7 +32,7 @@ prompt = ChatPromptTemplate.from_messages(
         (
             "system",
             """
-You are a Feedback Search Agent.
+You are a Facilities Booking Search Agent.
 
 Extract filters from user query.
 
@@ -42,18 +43,16 @@ Return ONLY JSON:
     "fromdate": null,
     "todate": null,
     "unit": null,
-    "ticket": null,
     "status": null,
     "category": null,
-    "building": null,
-    "filter": null
+    "building": null
   }}
 }}
 
 Rules:
-- status: 1=Active, 2=Inactive, 3=Faulty, 4=Loss, 5=Stolen
-- filter: created_at / fb_option / status
-- Dates: YYYY-MM-DD
+- category = facility type (BBQ, Game Room, Swimming Pool)
+- Dates format: YYYY-MM-DD
+- DO NOT return text
 """
         ),
         ("human", "{user_query}")
@@ -64,7 +63,22 @@ parser = JsonOutputParser()
 
 
 # =====================================================
-# DATE PARSER (🔥 ADDED ONLY THIS PART)
+# INPUT MODEL
+# =====================================================
+class FacilitiesBookingSearchInput(BaseModel):
+    fromdate: Optional[str] = None
+    todate: Optional[str] = None
+    unit: Optional[str] = None
+    status: Optional[int] = None
+    category: Optional[int] = None
+    building: Optional[str] = None
+
+    token: str
+    login_id: int
+
+
+# =====================================================
+# DATE PARSER (🔥 NEW)
 # =====================================================
 def parse_dates_from_query(query: str):
     query = query.lower()
@@ -73,23 +87,28 @@ def parse_dates_from_query(query: str):
     fromdate = None
     todate = None
 
+    # today / now
     if any(word in query for word in ["today", "now", "still"]):
         todate = today
 
+    # yesterday
     if "yesterday" in query:
         fromdate = today - timedelta(days=1)
         todate = fromdate
 
+    # last 7 days
     if "last 7 days" in query:
         fromdate = today - timedelta(days=7)
         todate = today
 
+    # last month
     if "last month" in query:
         first_day_this_month = today.replace(day=1)
         last_day_last_month = first_day_this_month - timedelta(days=1)
         fromdate = last_day_last_month.replace(day=1)
         todate = last_day_last_month
 
+    # jan 2026
     match = re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*(\d{4})", query)
     if match:
         month_str, year = match.groups()
@@ -108,46 +127,53 @@ def parse_dates_from_query(query: str):
 
 
 # =====================================================
-# INPUT MODEL
+# CATEGORY MAP API
 # =====================================================
-class FeedbackSearchInput(BaseModel):
-    fromdate: Optional[str] = None
-    todate: Optional[str] = None
-    unit: Optional[str] = None
-    ticket: Optional[str] = None
-    status: Optional[int] = None
-    category: Optional[int] = None
-    building: Optional[str] = None
-    filter: Optional[str] = None
+async def get_facility_category_map(token: str, login_id: int) -> Dict[str, int]:
+    url = "https://aerea.panzerplayground.com/api/ops/v4/facilityoptions"
 
-    token: str
-    login_id: int
+    payload = {"login_id": login_id}
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, data=payload, headers=headers)
+
+    data = response.json()
+
+    return {v.lower(): int(k) for k, v in data.get("options", {}).items()}
 
 
 # =====================================================
 # NODE
 # =====================================================
-async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
-    from MCP.defect_mcp_server import search_feedback
+async def facilities_booking_search_node(state: FacilitiesBookingSearchState) -> Dict[str, Any]:
+    from MCP.defect_mcp_server import search_facilities_booking
 
     chain = prompt | llm | parser
 
-    llm_output = await chain.ainvoke({
-        "user_query": state["user_query"]
-    })
+    # LLM
+    try:
+        llm_output = await chain.ainvoke({"user_query": state["user_query"]})
+    except Exception as e:
+        print(f"⚠️ LLM failed: {e}")
+        llm_output = {"filters": {}}
 
     filters = llm_output.get("filters", {})
 
-    print(f"\n📋 [Feedback Search] Filters: {filters}")
+    print(f"\n📋 [Facility Booking] Filters: {filters}")
 
-    # CLEAN FILTERS
+    # CLEAN
     cleaned_filters = {
-        k: None if v in ["null", None, ""] else v
-        for k, v in filters.items()
+        k: v for k, v in filters.items()
+        if v not in ["null", None, ""]
     }
 
     # =====================================================
-    # 🔥 DATE FIX (ADDED HERE ONLY)
+    # 🔥 DATE FIX (IMPORTANT)
     # =====================================================
     date_fix = parse_dates_from_query(state["user_query"])
 
@@ -166,87 +192,82 @@ async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
         cleaned_filters["todate"] = datetime.today().strftime("%Y-%m-%d")
 
     # =====================================================
-    # CATEGORY MAP (UNCHANGED)
+    # CATEGORY FIX
     # =====================================================
-    category_map = {
-        "security": 1,
-        "plumbing": 2,
-        "lift": 32,
-        "cleaning": 5,
-        "electrical": 6
-    }
+    try:
+        category_map = await get_facility_category_map(
+            state.get("token"),
+            state.get("login_id")
+        )
 
-    cat = cleaned_filters.get("category")
+        cat = cleaned_filters.get("category")
 
-    if isinstance(cat, str):
-        mapped = category_map.get(cat.lower())
-        if mapped:
-            cleaned_filters["category"] = mapped
-        else:
-            cleaned_filters["category"] = None
+        if isinstance(cat, str):
+            cat_lower = cat.lower()
+
+            for name, cid in category_map.items():
+                if cat_lower in name:
+                    cleaned_filters["category"] = cid
+                    break
+            else:
+                cleaned_filters.pop("category", None)
+
+    except Exception as e:
+        print(f"⚠️ Category mapping failed: {e}")
 
     print(f"🧹 Cleaned Filters: {cleaned_filters}")
-    print("🔍 Calling Feedback API...")
 
+    # =====================================================
+    # API CALL
+    # =====================================================
     try:
-        result_obj = await search_feedback(
-            FeedbackSearchInput(
+        result_obj = await search_facilities_booking(
+            FacilitiesBookingSearchInput(
                 **cleaned_filters,
-                token=state["token"],
-                login_id=state["login_id"]
+                token=state.get("token"),
+                login_id=state.get("login_id")
             )
         )
 
-        if hasattr(result_obj, "model_dump"):
-            result_dict = result_obj.model_dump()
-        else:
-            result_dict = result_obj
+        result_dict = result_obj.model_dump() if hasattr(result_obj, "model_dump") else result_obj
 
     except Exception as e:
-        print(f"❌ [Feedback Search] Error: {e}")
         return {
             **state,
             "response": {"message": str(e), "total": 0}
         }
 
-    # RESPONSE PARSE
+    # =====================================================
+    # FORMAT RESPONSE
+    # =====================================================
     records = result_dict.get("data", [])
 
     formatted = []
 
     for r in records:
         sub = r.get("submissions") or {}
-        unit_info = r.get("unit_info") or {}
-        user_info = r.get("user_info") or {}
+        typ = r.get("type") or {}
+        unit = r.get("unit_info") or {}
+        user = r.get("user_info") or {}
 
         formatted.append({
-            "ticket": sub.get("ticket"),
-            "subject": sub.get("subject"),
-            "notes": sub.get("notes"),
+            "booking_id": sub.get("id"),
+            "facility": typ.get("facility_type"),
+            "booking_date": sub.get("booking_date"),
+            "booking_time": sub.get("booking_time"),
             "status": sub.get("status"),
-            "category": (sub.get("getoption") or {}).get("feedback_option"),
-            "unit": unit_info.get("unit"),
-            "block": unit_info.get("building"),
-            "user": user_info.get("name"),
-            "created_at": sub.get("created_at"),
+            "unit": unit.get("unit"),
+            "block": unit.get("building"),
+            "user": user.get("first_name"),
         })
-
-    print(f"✅ Parsed {len(formatted)} feedback records")
 
     return {
         **state,
         "response": {
             "table": {
                 "columns": [
-                    "ticket",
-                    "subject",
-                    "notes",
-                    "status",
-                    "category",
-                    "unit",
-                    "block",
-                    "user",
-                    "created_at"
+                    "booking_id", "facility", "booking_date",
+                    "booking_time", "status", "unit", "block", "user"
                 ],
                 "rows": formatted
             },
@@ -258,14 +279,14 @@ async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
 # =====================================================
 # GRAPH
 # =====================================================
-workflow = StateGraph(FeedbackSearchState)
+workflow = StateGraph(FacilitiesBookingSearchState)
 
-workflow.add_node("feedback_search", feedback_search_node)
+workflow.add_node("facilities_booking_search", facilities_booking_search_node)
 
-workflow.set_entry_point("feedback_search")
+workflow.set_entry_point("facilities_booking_search")
 
-workflow.add_edge("feedback_search", END)
+workflow.add_edge("facilities_booking_search", END)
 
 graph = workflow.compile()
 
-print("✅ Feedback Search Agent Ready")
+print("✅ Facilities Booking Search Agent Ready")

@@ -7,6 +7,7 @@ from Core.model_registry import get_chat_model
 from Orchestration.orchestration_prompts import get_route_prompt, get_greeting_prompt
 from Domain.Defect_Module.defect_router_agent import graph as defect_router_graph
 from Domain.Feedback_Module.feedback_router_agent import graph as feedback_router_graph
+from Domain.Facilities_Booking_Module.facilities_booking_router_agent import graph as facilities_router_graph
 
 
 
@@ -17,6 +18,7 @@ class OrchestrationState(TypedDict):
     route: str
     defect_action: str
     feedback_action: str 
+    facility_action: str
     response: Dict[str, Any]  # Add response field
 
     token: str
@@ -47,6 +49,7 @@ def orchestration_node(state: OrchestrationState) -> OrchestrationState:
         "route": route,
         "defect_action": state.get("defect_action", ""),
         "feedback_action": state.get("feedback_action", ""),
+        "facility_action": state.get("facility_action", ""),
         "response": state.get("response", {}),
         "token": state.get("token"),
         "login_id": state.get("login_id")
@@ -172,7 +175,25 @@ async def feedback_domain_node(state: OrchestrationState):
         "response": result.get("response", {})
     }
 
+async def facility_booking_domain_node(state: OrchestrationState):
+    print(f"\n🚀 [Orchestrator] Entering Facility Domain for: {state['user_query']}")
 
+    facility_input = {
+        "user_query": state["user_query"],
+        "chat_history": state.get("chat_history", []),
+        "token": state.get("token"),
+        "login_id": state.get("login_id")
+    }
+
+    result = await facilities_router_graph.ainvoke(facility_input)
+
+    print(f"✅ [Orchestrator] Facility Domain completed")
+
+    return {
+        **state,
+        "facility_action": result.get("facility_action", ""),
+        "response": result.get("response", {})
+    }
 # ------------------ GRAPH ------------------
 workflow = StateGraph(OrchestrationState)
 

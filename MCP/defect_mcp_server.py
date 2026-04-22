@@ -23,6 +23,7 @@ fastmcp = FastMCP("defect-mcp")
 # =====================================================
 API_URL = "https://aerea.panzerplayground.com/api/ops/v4/defectssearch"
 FEEDBACK_API_URL = "https://aerea.panzerplayground.com/api/ops/v4/searchfeedback"
+FACILITY_API_URL = "https://aerea.panzerplayground.com/api/ops/v4/searchfacility"
 
 
 # =====================================================
@@ -101,6 +102,18 @@ class FeedbackSearchInput(BaseModel):
     login_id: int
     token: str
 
+
+class FacilitiesBookingSearchInput(BaseModel):
+    fromdate: Optional[str] = None
+    todate: Optional[str] = None
+    unit: Optional[str] = None
+    status: Optional[int] = None
+    category: Optional[int] = None   # type_id
+    building: Optional[str] = None
+
+    login_id: int
+    token: str
+
 # =====================================================
 # MCP TOOL (UPDATED)
 # =====================================================
@@ -135,7 +148,7 @@ async def search_defects(input: DefectSearchInput) -> DefectSearchResponse:
             API_URL,
             json=payload,
             headers=headers,
-            timeout=20,
+            timeout=60,
         )
 
     if response.status_code != 200:
@@ -217,7 +230,7 @@ async def search_feedback(input: FeedbackSearchInput):
             FEEDBACK_API_URL,
             data=payload,
             headers=headers,
-            timeout=20,
+            timeout=60,
         )
 
     print(f"📥 [MCP] Status Code: {response.status_code}")
@@ -229,5 +242,45 @@ async def search_feedback(input: FeedbackSearchInput):
     result = response.json()
 
     print(f"📦 [MCP] Response Count: {len(result.get('data', []))}")
+
+    return result
+
+@fastmcp.tool()
+async def search_facilities_booking(input: FacilitiesBookingSearchInput):
+    import httpx
+
+    token = input.token
+
+    if not token:
+        raise ValueError("User token is required")
+
+    # 🔥 CLEAN PAYLOAD (same as feedback)
+    payload = input.model_dump(exclude_none=True)
+    payload.pop("token", None)
+
+    print(f"\n📤 [MCP] Facility Payload: {payload}")
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            FACILITY_API_URL,
+            data=payload,   # ⚠️ IMPORTANT → form-data style
+            headers=headers,
+            timeout=60,
+        )
+
+    print(f"📥 [MCP] Status Code: {response.status_code}")
+
+    if response.status_code != 200:
+        print(f"❌ [MCP] Error Response: {response.text}")
+        raise RuntimeError(f"API ERROR {response.status_code}: {response.text}")
+
+    result = response.json()
+
+    print(f"📦 [MCP] Facility Records: {len(result.get('data', []))}")
 
     return result
