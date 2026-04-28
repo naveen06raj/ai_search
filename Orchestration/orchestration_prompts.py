@@ -12,6 +12,7 @@ def get_route_prompt():
         "- device_management_domain : devices, sensors, hardware, IoT, status\n"
         "- feedback_domain : feedback, complaints, user reports, submissions\n"
         "- facility_booking_domain : facility booking, amenities, reservations, BBQ, room booking, swimming pool, game room\n"
+        "- announcement_domain : announcements, notices, updates, broadcasts, messages\n"
         "- general_response : greetings or general questions\n"
         "- clarify_query : missing or unclear information\n"
         "- continue_conversation : follow-up or refinement of previous request\n"
@@ -21,6 +22,7 @@ def get_route_prompt():
         "- If query is about defects/issues → defect_domain\n"
         "- If query is about feedback/complaints → feedback_domain\n"
         "- If query is about facility booking (BBQ, room, pool, amenities, reservation, booking) → facility_booking_domain\n"
+        "- If query is about announcements, notices, updates → announcement_domain\n"
         "- If greeting → general_response\n"
         "- If unclear → clarify_query\n\n"
 

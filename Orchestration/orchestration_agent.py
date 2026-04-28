@@ -8,6 +8,7 @@ from Orchestration.orchestration_prompts import get_route_prompt, get_greeting_p
 from Domain.Defect_Module.defect_router_agent import graph as defect_router_graph
 from Domain.Feedback_Module.feedback_router_agent import graph as feedback_router_graph
 from Domain.Facilities_Booking_Module.facilities_booking_router_agent import graph as facilities_router_graph
+from Domain.Announcement_Module.announcement_router_agent import graph as announcement_router_graph
 
 
 
@@ -19,6 +20,7 @@ class OrchestrationState(TypedDict):
     defect_action: str
     feedback_action: str 
     facility_action: str
+    announcement_action: str
     response: Dict[str, Any]  # Add response field
 
     token: str
@@ -50,6 +52,7 @@ def orchestration_node(state: OrchestrationState) -> OrchestrationState:
         "defect_action": state.get("defect_action", ""),
         "feedback_action": state.get("feedback_action", ""),
         "facility_action": state.get("facility_action", ""),
+        "announcement_action": state.get("announcement_action", ""),
         "response": state.get("response", {}),
         "token": state.get("token"),
         "login_id": state.get("login_id")
@@ -65,6 +68,7 @@ def route_decision(state: OrchestrationState):
         "device_management_domain",
         "feedback_domain",
         "facility_booking_domain",
+        "announcement_domain",
         "general_response",
         "clarify_query",
         "continue_conversation",
@@ -99,17 +103,37 @@ async def defect_domain_node(state: OrchestrationState):
     }
 
 
-def device_management_domain_node(state): 
+async def device_management_domain_node(state): 
     print(f"\n⚠️ [Orchestrator] Device Management Domain not implemented")
     return {**state, "response": {"message": "Device management coming soon"}}
 
 
-def facility_booking_domain_node(state): 
+async def facility_booking_domain_node(state): 
     print(f"\n⚠️ [Orchestrator] Facility Booking Domain not implemented")
     return {**state, "response": {"message": "Facility booking coming soon"}}
 
+async def announcement_domain_node(state: OrchestrationState):
+    print(f"\n🚀 [Orchestrator] Entering Announcement Domain for: {state['user_query']}")
 
-def general_response_node(state): 
+    announcement_input = {
+        "user_query": state["user_query"],
+        "chat_history": state.get("chat_history", []),
+        "token": state.get("token"),
+        "login_id": state.get("login_id")
+    }
+
+    result = await announcement_router_graph.ainvoke(announcement_input)
+
+    print(f"✅ [Orchestrator] Announcement Domain completed")
+
+    return {
+        **state,
+        "announcement_action": result.get("announcement_action", ""),
+        "response": result.get("response", {})
+    }
+
+
+async def general_response_node(state): 
     print(f"\n💬 [Orchestrator] Generating general response for: {state['user_query']}")
     
     # Use the greeting prompt for better responses
@@ -141,12 +165,12 @@ def general_response_node(state):
         }
 
 
-def clarify_query_node(state): 
+async def clarify_query_node(state): 
     print(f"\n❓ [Orchestrator] Asking for clarification")
     return {**state, "response": {"message": "Could you please clarify your question?"}}
 
 
-def continue_conversation_node(state): 
+async def continue_conversation_node(state): 
     print(f"\n💬 [Orchestrator] Continuing conversation")
     return {**state, "response": {"message": "Let's continue our conversation."}}
 
@@ -202,6 +226,7 @@ workflow.add_node("defect_domain", defect_domain_node)
 workflow.add_node("device_management_domain", device_management_domain_node)
 workflow.add_node("feedback_domain", feedback_domain_node)
 workflow.add_node("facility_booking_domain", facility_booking_domain_node)
+workflow.add_node("announcement_domain", announcement_domain_node)
 workflow.add_node("general_response", general_response_node)
 workflow.add_node("clarify_query", clarify_query_node)
 workflow.add_node("continue_conversation", continue_conversation_node)
@@ -215,6 +240,7 @@ workflow.add_conditional_edges(
         "device_management_domain": "device_management_domain",
         "feedback_domain": "feedback_domain",
         "facility_booking_domain": "facility_booking_domain",
+        "announcement_domain": "announcement_domain",
         "general_response": "general_response",
         "clarify_query": "clarify_query",
         "continue_conversation": "continue_conversation",
@@ -228,6 +254,7 @@ for node in [
     "device_management_domain",
     "feedback_domain",
     "facility_booking_domain",
+    "announcement_domain",
     "general_response",
     "clarify_query",
     "continue_conversation",

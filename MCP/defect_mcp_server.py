@@ -24,6 +24,8 @@ fastmcp = FastMCP("defect-mcp")
 API_URL = "https://aerea.panzerplayground.com/api/ops/v4/defectssearch"
 FEEDBACK_API_URL = "https://aerea.panzerplayground.com/api/ops/v4/searchfeedback"
 FACILITY_API_URL = "https://aerea.panzerplayground.com/api/ops/v4/searchfacility"
+ANNOUNCEMENT_API_URL = "https://aerea.panzerplayground.com/api/ops/v4/searchannouncement"
+ROLES_API_URL = "https://aerea.panzerplayground.com/api/ops/v4/roleslist"
 
 
 # =====================================================
@@ -110,6 +112,15 @@ class FacilitiesBookingSearchInput(BaseModel):
     status: Optional[int] = None
     category: Optional[int] = None   # type_id
     building: Optional[str] = None
+
+    login_id: int
+    token: str
+
+class AnnouncementSearchInput(BaseModel):
+    startdate: Optional[str] = None
+    enddate: Optional[str] = None
+    roles: Optional[int] = None
+    status: Optional[int] = None
 
     login_id: int
     token: str
@@ -282,5 +293,74 @@ async def search_facilities_booking(input: FacilitiesBookingSearchInput):
     result = response.json()
 
     print(f"📦 [MCP] Facility Records: {len(result.get('data', []))}")
+
+    return result
+
+@fastmcp.tool()
+async def get_roles_list(token: str, login_id: int):
+    import httpx
+
+    payload = {
+        "login_id": login_id
+    }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            ROLES_API_URL,
+            data=payload,
+            headers=headers,
+            timeout=60,
+        )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Roles API ERROR {response.status_code}: {response.text}")
+
+    result = response.json()
+
+    return result.get("roles", {})
+
+
+@fastmcp.tool()
+async def search_announcements(input: AnnouncementSearchInput):
+    import httpx
+
+    token = input.token
+
+    if not token:
+        raise ValueError("User token is required")
+
+    # CLEAN PAYLOAD
+    payload = input.model_dump(exclude_none=True)
+    payload.pop("token", None)
+
+    print(f"\n📤 [MCP] Announcement Payload: {payload}")
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            ANNOUNCEMENT_API_URL,
+            data=payload,   # form-data style
+            headers=headers,
+            timeout=60,
+        )
+
+    print(f"📥 [MCP] Status Code: {response.status_code}")
+
+    if response.status_code != 200:
+        print(f"❌ [MCP] Error Response: {response.text}")
+        raise RuntimeError(f"API ERROR {response.status_code}: {response.text}")
+
+    result = response.json()
+
+    print(f"📦 [MCP] Announcement Records: {len(result.get('data', []))}")
 
     return result
