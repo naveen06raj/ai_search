@@ -16,6 +16,10 @@ from MCP.defect_mcp_server import fastmcp
 # 🔥 Move import here (IMPORTANT for performance)
 from Orchestration.orchestration_agent import graph as orchestration_graph
 
+from Domain.Defect_Module.Agents.defect_magic_autofill_agent import graph as defect_magic_graph
+
+from MCP.defect_mcp_server import defect_magic_map
+
 
 # =====================================================
 # LOGGING (Production Ready)
@@ -58,6 +62,10 @@ class SearchRequest(BaseModel):
     filters: Optional[Dict[str, Any]] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
+
+class AutofillRequest(BaseModel):
+    text: str
+    token: str
 
 
 class SearchResponse(BaseModel):
@@ -158,6 +166,50 @@ async def search_ai(request: SearchRequest):
             status_code=500,
             detail=str(e)
         )
+
+
+# =====================================================
+# 🔥 AI MAGIC AUTOFILL API
+# =====================================================
+
+@app.post("/api/defect/autofill")
+async def defect_autofill(request: AutofillRequest):
+    try:
+        logger.info(f"✨ [AUTOFILL] Input: {request.text}")
+
+        # =========================
+        # STEP 1 → LLM
+        # =========================
+        result = await asyncio.wait_for(
+            defect_magic_graph.ainvoke({
+                "user_input": request.text
+            }),
+            timeout=10
+        )
+
+        extracted = result.get("extracted", [])
+
+        # =========================
+        # STEP 2 → MCP (WITH TOKEN)
+        # =========================
+        mapped = await defect_magic_map(
+            extracted=extracted,
+            token=request.token   # ✅ REAL TOKEN
+        )
+
+        return {
+            "success": True,
+            "message": "Autofill generated",
+            "data": mapped,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Autofill timeout")
+
+    except Exception as e:
+        logger.error(f"❌ Autofill Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =====================================================

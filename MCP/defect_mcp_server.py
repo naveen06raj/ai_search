@@ -364,3 +364,142 @@ async def search_announcements(input: AnnouncementSearchInput):
     print(f"📦 [MCP] Announcement Records: {len(result.get('data', []))}")
 
     return result
+
+
+
+@fastmcp.tool()
+async def defect_magic_map(
+    extracted: List[Dict],
+    token: str
+):
+    import httpx
+
+    print(f"\n🤖 [AI MAGIC MAP] Extracted: {extracted}")
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+
+    # =========================
+    # STEP 1: GET LOCATIONS
+    # =========================
+    location_url = "https://aerea.panzerplayground.com/api/v8/getDefectslocation"
+
+    async with httpx.AsyncClient() as client:
+        loc_res = await client.post(
+            location_url,
+            data={"property": 1},
+            headers=headers
+        )
+
+    if loc_res.status_code != 200:
+        raise RuntimeError(f"Location API Error: {loc_res.text}")
+
+    location_data = loc_res.json().get("data", [])
+
+    location_map = {
+        (item.get("defect_location") or "").lower(): {
+            "id": item.get("id"),
+            "name": item.get("defect_location")
+        }
+        for item in location_data
+    }
+
+    # =========================
+    # HELPER MATCH
+    # =========================
+    def match(text, mapping):
+        if not text:
+            return None, None
+
+        text = text.lower()
+
+        for k, v in mapping.items():
+            if k in text or text in k:
+                return v["name"], v["id"]
+
+        return None, None
+
+    # =========================
+    # PROCESS
+    # =========================
+    type_cache = {}
+    results = []
+
+    for item in extracted:
+        loc_text = item.get("location")
+        type_text = item.get("type")
+
+        # -------- LOCATION --------
+        loc_name, loc_id = match(loc_text, location_map)
+
+        if not loc_id:
+            print(f"⚠️ Location not found: {loc_text}")
+            continue
+
+        # -------- GET TYPES --------
+        if loc_id not in type_cache:
+
+            type_url = "https://aerea.panzerplayground.com/api/v8/getDefectstype"
+
+            async with httpx.AsyncClient() as client:
+                type_res = await client.post(
+                    type_url,
+                    data={
+                        "property": 1,
+                        "location": loc_id
+                    },
+                    headers=headers
+                )
+
+            if type_res.status_code != 200:
+                raise RuntimeError(f"Type API Error: {type_res.text}")
+
+            type_data = type_res.json().get("data", [])
+
+            type_cache[loc_id] = {
+                (t.get("defect_type") or "").lower(): {
+                    "id": t.get("id"),
+                    "name": t.get("defect_type")
+                }
+                for t in type_data
+            }
+
+        type_map = type_cache[loc_id]
+
+        # -------- TYPE MATCH --------
+        selected_type = None
+        selected_type_id = None
+
+        user_type = (type_text or "").lower()
+
+        for k, v in type_map.items():
+            if k in user_type or user_type in k:
+                selected_type = v["name"]
+                selected_type_id = v["id"]
+                break
+
+        # fallback
+        if not selected_type and type_map:
+            first = next(iter(type_map.values()))
+            selected_type = first["name"]
+            selected_type_id = first["id"]
+
+        # -------- REMARK --------
+        remark = item.get("remarks") or f"Issue related to {selected_type}"
+
+        if not remark.endswith("."):
+            remark += "."
+
+        results.append({
+            "location": loc_name,
+            "location_id": loc_id,
+            "type": selected_type,
+            "type_id": selected_type_id,
+            "remarks": remark
+        })
+
+    print(f"🧹 FINAL MAPPED: {results}")
+
+    return results
