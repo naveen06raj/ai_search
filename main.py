@@ -1,5 +1,3 @@
-# main.py
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -13,11 +11,10 @@ import asyncio
 # MCP
 from MCP.defect_mcp_server import fastmcp
 
-# 🔥 Move import here (IMPORTANT for performance)
+# Move import here (IMPORTANT for performance)
 from Orchestration.orchestration_agent import graph as orchestration_graph
 
 from Domain.Defect_Module.Agents.defect_magic_autofill_agent import graph as defect_magic_graph
-
 from MCP.defect_mcp_server import defect_magic_map
 
 
@@ -43,7 +40,7 @@ app = FastAPI(
 # =====================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # ⚠️ change in production
+    allow_origins=["*"],   # change in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,6 +60,7 @@ class SearchRequest(BaseModel):
     user_id: Optional[str] = None
     session_id: Optional[str] = None
 
+
 class AutofillRequest(BaseModel):
     text: str
     token: str
@@ -71,7 +69,7 @@ class AutofillRequest(BaseModel):
 class SearchResponse(BaseModel):
     success: bool
     message: str
-    data: Dict[str, Any]
+    data: Any
     metadata: Dict[str, Any]
     timestamp: str
 
@@ -102,7 +100,7 @@ async def health_check():
 
 
 # =====================================================
-# 🔥 MAIN SEARCH API
+# MAIN SEARCH API
 # =====================================================
 
 @app.post("/api/search", response_model=SearchResponse)
@@ -119,23 +117,63 @@ async def search_ai(request: SearchRequest):
             "login_id": request.login_id
         }
 
-        # 🔥 Timeout protection
+        # Timeout protection
         result = await asyncio.wait_for(
             orchestration_graph.ainvoke(input_data),
-            timeout=15
+            timeout=30
         )
 
         execution_time = (datetime.now() - start_time).total_seconds()
 
-        # 🔥 Safe response
+        route = result.get("route")
         response_data = result.get("response") or {}
+
+        # Defect only: keep nested defect payload + chart + total
+        if route == "defect_domain":
+            if isinstance(response_data, dict):
+                final_data = {
+                    "data": response_data.get(
+                        "data",
+                        response_data.get("table", {}).get("rows", [])
+                    ),
+                    "chart": response_data.get("chart"),
+                    "total": response_data.get("total"),
+                    "filter_applied": response_data.get("filter_applied"),
+                    "original_count": response_data.get("original_count"),
+                }
+            else:
+                final_data = {
+                    "data": response_data,
+                    "chart": None,
+                    "total": len(response_data) if isinstance(response_data, list) else 0,
+                    "filter_applied": False,
+                    "original_count": None,
+                }
+
+            record_count = (
+                final_data.get("total")
+                if isinstance(final_data.get("total"), int)
+                else len(final_data.get("data", []))
+            )
+        else:
+            final_data = response_data
+            record_count = (
+                response_data.get("total", len(response_data.get("records", [])))
+                if isinstance(response_data, dict)
+                else 0
+            )
 
         metadata = {
             "query": request.query,
             "execution_time_seconds": round(execution_time, 2),
-            "route": result.get("route"),
-            "action": result.get("defect_action") or result.get("feedback_action")or result.get("facility_action")or result.get("announcement_action"),
-            "record_count": response_data.get("total", len(response_data.get("records", []))),
+            "route": route,
+            "action": (
+                result.get("defect_action")
+                or result.get("feedback_action")
+                or result.get("facility_action")
+                or result.get("announcement_action")
+            ),
+            "record_count": record_count,
             "user_id": request.user_id,
             "session_id": request.session_id
         }
@@ -145,14 +183,13 @@ async def search_ai(request: SearchRequest):
         return SearchResponse(
             success=True,
             message="Search completed",
-            data=response_data,
+            data=final_data,
             metadata=metadata,
             timestamp=datetime.now().isoformat()
         )
 
     except asyncio.TimeoutError:
         logger.error("⏱️ Request Timeout")
-
         raise HTTPException(
             status_code=504,
             detail="Request timeout. Please try again."
@@ -161,7 +198,6 @@ async def search_ai(request: SearchRequest):
     except Exception as e:
         logger.error(f"❌ ERROR: {str(e)}")
         logger.error(traceback.format_exc())
-
         raise HTTPException(
             status_code=500,
             detail=str(e)
@@ -169,7 +205,7 @@ async def search_ai(request: SearchRequest):
 
 
 # =====================================================
-# 🔥 AI MAGIC AUTOFILL API
+# AI MAGIC AUTOFILL API
 # =====================================================
 
 @app.post("/api/defect/autofill")
@@ -177,9 +213,7 @@ async def defect_autofill(request: AutofillRequest):
     try:
         logger.info(f"✨ [AUTOFILL] Input: {request.text}")
 
-        # =========================
         # STEP 1 → LLM
-        # =========================
         result = await asyncio.wait_for(
             defect_magic_graph.ainvoke({
                 "user_input": request.text
@@ -189,12 +223,10 @@ async def defect_autofill(request: AutofillRequest):
 
         extracted = result.get("extracted", [])
 
-        # =========================
         # STEP 2 → MCP (WITH TOKEN)
-        # =========================
         mapped = await defect_magic_map(
             extracted=extracted,
-            token=request.token   # ✅ REAL TOKEN
+            token=request.token
         )
 
         return {
@@ -223,7 +255,7 @@ async def get_example_queries():
         "examples": [
             "Show open defects for block 6",
             "Find defects with ticket number 25121137801",
-            "Show all feedback for block 6",        # ✅ Added feedback example
+            "Show all feedback for block 6",
             "Show complaints related to lift"
         ]
     }
@@ -242,15 +274,12 @@ app.mount("/mcp", fastmcp.streamable_http_app)
 
 import os
 
-# ... (rest of your code)
-
 if __name__ == "__main__":
-    # Get port from environment variable, default to 8080 for Cloud Run
     port = int(os.environ.get("PORT", 8080))
-    
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=port,
-        reload=False  # Recommended: False in production/Cloud Run
+        reload=False
     )
