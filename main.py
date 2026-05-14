@@ -73,6 +73,12 @@ class SearchResponse(BaseModel):
     metadata: Dict[str, Any]
     timestamp: str
 
+    # Defect-only optional fields
+    chart: Optional[Dict[str, Any]] = None
+    total: Optional[int] = None
+    filter_applied: Optional[bool] = None
+    original_count: Optional[int] = None
+
 
 # =====================================================
 # ROOT
@@ -128,40 +134,66 @@ async def search_ai(request: SearchRequest):
         route = result.get("route")
         response_data = result.get("response") or {}
 
-        # Defect only: keep nested defect payload + chart + total
+        # =====================================================
+        # DEFECT DOMAIN
+        # return array directly under "data"
+        # =====================================================
         if route == "defect_domain":
             if isinstance(response_data, dict):
-                final_data = {
-                    "data": response_data.get(
-                        "data",
-                        response_data.get("table", {}).get("rows", [])
-                    ),
-                    "chart": response_data.get("chart"),
-                    "total": response_data.get("total"),
-                    "filter_applied": response_data.get("filter_applied"),
-                    "original_count": response_data.get("original_count"),
-                }
+                final_data = response_data.get(
+                    "data",
+                    response_data.get("table", {}).get("rows", [])
+                )
+                chart_data = response_data.get("chart")
+                total = response_data.get("total")
+                filter_applied = response_data.get("filter_applied")
+                original_count = response_data.get("original_count")
             else:
-                final_data = {
-                    "data": response_data,
-                    "chart": None,
-                    "total": len(response_data) if isinstance(response_data, list) else 0,
-                    "filter_applied": False,
-                    "original_count": None,
-                }
+                final_data = response_data
+                chart_data = None
+                total = len(response_data) if isinstance(response_data, list) else 0
+                filter_applied = False
+                original_count = None
 
-            record_count = (
-                final_data.get("total")
-                if isinstance(final_data.get("total"), int)
-                else len(final_data.get("data", []))
+            record_count = len(final_data) if isinstance(final_data, list) else 0
+
+            metadata = {
+                "query": request.query,
+                "execution_time_seconds": round(execution_time, 2),
+                "route": route,
+                "action": (
+                    result.get("defect_action")
+                    or result.get("feedback_action")
+                    or result.get("facility_action")
+                    or result.get("announcement_action")
+                ),
+                "record_count": record_count,
+                "user_id": request.user_id,
+                "session_id": request.session_id
+            }
+
+            logger.info(f"✅ Found {metadata['record_count']} records in {execution_time:.2f}s")
+
+            return SearchResponse(
+                success=True,
+                message="Search completed",
+                data=final_data,
+                chart=chart_data,
+                total=total,
+                filter_applied=filter_applied,
+                original_count=original_count,
+                metadata=metadata,
+                timestamp=datetime.now().isoformat()
             )
-        else:
-            final_data = response_data
-            record_count = (
-                response_data.get("total", len(response_data.get("records", [])))
-                if isinstance(response_data, dict)
-                else 0
-            )
+
+        # =====================================================
+        # OTHER MODULES
+        # =====================================================
+        record_count = (
+            response_data.get("total", len(response_data.get("records", [])))
+            if isinstance(response_data, dict)
+            else 0
+        )
 
         metadata = {
             "query": request.query,
@@ -183,7 +215,7 @@ async def search_ai(request: SearchRequest):
         return SearchResponse(
             success=True,
             message="Search completed",
-            data=final_data,
+            data=response_data,
             metadata=metadata,
             timestamp=datetime.now().isoformat()
         )

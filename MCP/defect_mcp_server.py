@@ -6,7 +6,7 @@ Defect MCP Server (Production Ready)
 """
 
 import os
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 from pydantic import BaseModel
 from mcp.server.fastmcp import FastMCP
@@ -48,7 +48,7 @@ INSPECTION_STATUS_MAP = {
 
 
 # =====================================================
-# INPUT MODEL (UPDATED)
+# INPUT MODEL
 # =====================================================
 class DefectSearchInput(BaseModel):
     query: Optional[str] = None
@@ -62,7 +62,7 @@ class DefectSearchInput(BaseModel):
     type: Optional[str] = None
     block_no: Optional[int] = None
 
-    # 🔥 IMPORTANT (dynamic user data)
+    # IMPORTANT (dynamic user data)
     login_id: int
     token: str
 
@@ -70,26 +70,11 @@ class DefectSearchInput(BaseModel):
 # =====================================================
 # OUTPUT MODELS
 # =====================================================
-class DefectRecord(BaseModel):
-    ticket_no: str
-    status: str
-    block: Optional[str]
-    unit_no: Optional[str]
-
-    submitted_date: Optional[str]
-    rectification_days: Optional[int]
-
-    appointment_datetime: Optional[str]
-    appointment_status: Optional[str]
-
-    completion_date: Optional[str]
-    reference_id: Optional[str]
-
-
 class DefectSearchResponse(BaseModel):
     total: int
-    records: List[DefectRecord]
+    records: List[Dict[str, Any]]
     status_summary: Dict[str, int]
+
 
 class FeedbackSearchInput(BaseModel):
     fromdate: Optional[str] = None
@@ -116,6 +101,7 @@ class FacilitiesBookingSearchInput(BaseModel):
     login_id: int
     token: str
 
+
 class AnnouncementSearchInput(BaseModel):
     startdate: Optional[str] = None
     enddate: Optional[str] = None
@@ -125,26 +111,24 @@ class AnnouncementSearchInput(BaseModel):
     login_id: int
     token: str
 
+
 # =====================================================
-# MCP TOOL (UPDATED)
+# MCP TOOL
 # =====================================================
 @fastmcp.tool()
 async def search_defects(input: DefectSearchInput) -> DefectSearchResponse:
     import httpx
 
-    # 🔥 Extract dynamic user data
     token = input.token
     login_id = input.login_id
 
     if not token:
         raise ValueError("User token is required")
 
-    # Build payload
     payload = input.model_dump(
         exclude_none=True,
         exclude={"token", "login_id", "query"}
     )
-
     payload["login_id"] = login_id
 
     headers = {
@@ -153,7 +137,6 @@ async def search_defects(input: DefectSearchInput) -> DefectSearchResponse:
         "Content-Type": "application/json",
     }
 
-    # Call backend API
     async with httpx.AsyncClient() as client:
         response = await client.post(
             API_URL,
@@ -167,54 +150,47 @@ async def search_defects(input: DefectSearchInput) -> DefectSearchResponse:
 
     api_data = response.json()
 
-    records: List[DefectRecord] = []
+    records: List[Dict[str, Any]] = []
     status_summary: Dict[str, int] = {}
 
     for item in api_data.get("data", []):
-        lists = item.get("lists", {})
-        inspection = item.get("inspection")
+        # Preserve the full nested record if present
+        if isinstance(item, dict) and "lists" in item:
+            lists = item.get("lists", {}) or {}
+            inspection = item.get("inspection")
 
-        # STATUS
-        status_code = lists.get("status")
-        status_text = STATUS_MAP.get(status_code, "UNKNOWN")
-        status_summary[status_text] = status_summary.get(status_text, 0) + 1
+            status_code = lists.get("status")
+            status_text = STATUS_MAP.get(status_code, "UNKNOWN")
+            status_summary[status_text] = status_summary.get(status_text, 0) + 1
 
-        # INSPECTION STATUS
-        inspection_status_code = (
-            inspection.get("status")
-            if inspection
-            else lists.get("inspection_status")
-        )
+            # Keep the full object exactly as returned by API
+            records.append({
+                "lists": lists,
+                "user_info": item.get("user_info"),
+                "unit_info": item.get("unit_info"),
+                "inspection": inspection,
+            })
 
-        appointment_status = INSPECTION_STATUS_MAP.get(
-            inspection_status_code,
-            "UNKNOWN"
-        )
+        else:
+            # Fallback for flat rows, keep whatever exists
+            lists = item if isinstance(item, dict) else {}
+            status_code = lists.get("status")
+            status_text = STATUS_MAP.get(status_code, "UNKNOWN")
+            status_summary[status_text] = status_summary.get(status_text, 0) + 1
 
-        appointment_datetime = None
-        if inspection and inspection.get("appt_date") and inspection.get("appt_time"):
-            appointment_datetime = f"{inspection['appt_date']} {inspection['appt_time']}"
-
-        records.append(
-            DefectRecord(
-                ticket_no=str(lists.get("ticket", "")),
-                status=status_text,
-                block=str(lists.get("block_no")) if lists.get("block_no") else None,
-                unit_no=str(lists.get("unit_no")) if lists.get("unit_no") else None,
-                submitted_date=lists.get("created_at"),
-                rectification_days=lists.get("rectified_in_days"),
-                appointment_datetime=appointment_datetime,
-                appointment_status=appointment_status,
-                completion_date=lists.get("updated_at"),
-                reference_id=lists.get("ref_id"),
-            )
-        )
+            records.append({
+                "lists": lists,
+                "user_info": None,
+                "unit_info": None,
+                "inspection": None,
+            })
 
     return DefectSearchResponse(
         total=len(records),
         records=records,
         status_summary=status_summary,
     )
+
 
 @fastmcp.tool()
 async def search_feedback(input: FeedbackSearchInput):
@@ -225,7 +201,6 @@ async def search_feedback(input: FeedbackSearchInput):
     if not token:
         raise ValueError("User token is required")
 
-    # CLEAN PAYLOAD
     payload = input.model_dump(exclude_none=True)
     payload.pop("token", None)
 
@@ -256,6 +231,7 @@ async def search_feedback(input: FeedbackSearchInput):
 
     return result
 
+
 @fastmcp.tool()
 async def search_facilities_booking(input: FacilitiesBookingSearchInput):
     import httpx
@@ -265,7 +241,6 @@ async def search_facilities_booking(input: FacilitiesBookingSearchInput):
     if not token:
         raise ValueError("User token is required")
 
-    # 🔥 CLEAN PAYLOAD (same as feedback)
     payload = input.model_dump(exclude_none=True)
     payload.pop("token", None)
 
@@ -279,7 +254,7 @@ async def search_facilities_booking(input: FacilitiesBookingSearchInput):
     async with httpx.AsyncClient() as client:
         response = await client.post(
             FACILITY_API_URL,
-            data=payload,   # ⚠️ IMPORTANT → form-data style
+            data=payload,
             headers=headers,
             timeout=60,
         )
@@ -295,6 +270,7 @@ async def search_facilities_booking(input: FacilitiesBookingSearchInput):
     print(f"📦 [MCP] Facility Records: {len(result.get('data', []))}")
 
     return result
+
 
 @fastmcp.tool()
 async def get_roles_list(token: str, login_id: int):
@@ -334,7 +310,6 @@ async def search_announcements(input: AnnouncementSearchInput):
     if not token:
         raise ValueError("User token is required")
 
-    # CLEAN PAYLOAD
     payload = input.model_dump(exclude_none=True)
     payload.pop("token", None)
 
@@ -348,7 +323,7 @@ async def search_announcements(input: AnnouncementSearchInput):
     async with httpx.AsyncClient() as client:
         response = await client.post(
             ANNOUNCEMENT_API_URL,
-            data=payload,   # form-data style
+            data=payload,
             headers=headers,
             timeout=60,
         )
@@ -366,7 +341,6 @@ async def search_announcements(input: AnnouncementSearchInput):
     return result
 
 
-
 @fastmcp.tool()
 async def defect_magic_map(
     extracted: List[Dict],
@@ -381,9 +355,7 @@ async def defect_magic_map(
         "Accept": "application/json",
     }
 
-    # =========================
     # STEP 1: GET LOCATIONS
-    # =========================
     location_url = "https://aerea.panzerplayground.com/api/v8/getDefectslocation"
 
     async with httpx.AsyncClient() as client:
@@ -406,9 +378,7 @@ async def defect_magic_map(
         for item in location_data
     }
 
-    # =========================
     # HELPER MATCH
-    # =========================
     def match(text, mapping):
         if not text:
             return None, None
@@ -421,9 +391,7 @@ async def defect_magic_map(
 
         return None, None
 
-    # =========================
     # PROCESS
-    # =========================
     type_cache = {}
     results = []
 
@@ -431,16 +399,15 @@ async def defect_magic_map(
         loc_text = item.get("location")
         type_text = item.get("type")
 
-        # -------- LOCATION --------
+        # LOCATION
         loc_name, loc_id = match(loc_text, location_map)
 
         if not loc_id:
             print(f"⚠️ Location not found: {loc_text}")
             continue
 
-        # -------- GET TYPES --------
+        # GET TYPES
         if loc_id not in type_cache:
-
             type_url = "https://aerea.panzerplayground.com/api/v8/getDefectstype"
 
             async with httpx.AsyncClient() as client:
@@ -468,7 +435,7 @@ async def defect_magic_map(
 
         type_map = type_cache[loc_id]
 
-        # -------- TYPE MATCH --------
+        # TYPE MATCH
         selected_type = None
         selected_type_id = None
 
@@ -486,7 +453,7 @@ async def defect_magic_map(
             selected_type = first["name"]
             selected_type_id = first["id"]
 
-        # -------- REMARK --------
+        # REMARK
         remark = item.get("remarks") or f"Issue related to {selected_type}"
 
         if not remark.endswith("."):

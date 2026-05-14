@@ -135,8 +135,8 @@ def parse_dates_from_query(query: str):
 # =====================================================
 def normalize_defect_record(record: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Preserve nested defect format if the upstream API already returns it.
-    Otherwise wrap flat rows into the nested structure.
+    Preserve nested defect format if upstream already returns it.
+    If upstream returns flat rows, wrap them in the same structure.
     """
     if isinstance(record, dict) and "lists" in record:
         return {
@@ -160,6 +160,18 @@ def normalize_defect_record(record: Dict[str, Any]) -> Dict[str, Any]:
         "unit_info": None,
         "inspection": None
     }
+
+def get_nested_status(record: Dict[str, Any]) -> Optional[int]:
+    """
+    Read status from nested 'lists' first, fallback to top-level if needed.
+    """
+    if not isinstance(record, dict):
+        return None
+
+    if isinstance(record.get("lists"), dict):
+        return record["lists"].get("status")
+
+    return record.get("status")
 
 # =====================================================
 # NODE
@@ -236,14 +248,22 @@ async def defect_search_node(state: DefectSearchState) -> Dict[str, Any]:
     records = result_dict.get("records", [])
     original_count = len(records)
 
+    # Filter by status if requested
     if status_filter in STATUS_MAP:
         target_status = STATUS_MAP[status_filter]
         print(f"🎯 Applying status filter: {target_status}")
 
-        records = [r for r in records if r.get("status") == target_status]
+        records = [
+            r for r in records
+            if STATUS_MAP.get(get_nested_status(r), "UNKNOWN") == target_status
+        ]
         status_summary = {target_status: len(records)}
     else:
-        status_summary = result_dict.get("status_summary", {})
+        # Build summary from nested lists.status
+        status_summary = {}
+        for r in records:
+            status_text = STATUS_MAP.get(get_nested_status(r), "UNKNOWN")
+            status_summary[status_text] = status_summary.get(status_text, 0) + 1
 
     total = len(records)
 
@@ -273,4 +293,4 @@ workflow.add_edge("defect_search", END)
 
 graph = workflow.compile()
 
-print("✅ Defect Search Agent compiled (updated nested response + chart + total)")
+print("✅ Defect Search Agent compiled (nested response preserved + chart + total)")
