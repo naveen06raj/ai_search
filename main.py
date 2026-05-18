@@ -56,6 +56,9 @@ class SearchRequest(BaseModel):
     token: str
     login_id: int
 
+    # Module context from frontend: defect / feedback / facility / announcement
+    current_module: Optional[str] = None
+
     filters: Optional[Dict[str, Any]] = None
     user_id: Optional[str] = None
     session_id: Optional[str] = None
@@ -120,7 +123,8 @@ async def search_ai(request: SearchRequest):
             "user_query": request.query,
             "chat_history": [],
             "token": request.token,
-            "login_id": request.login_id
+            "login_id": request.login_id,
+            "current_module": request.current_module
         }
 
         # Timeout protection
