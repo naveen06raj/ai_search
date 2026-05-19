@@ -64,7 +64,7 @@ parser = JsonOutputParser()
 
 
 # =====================================================
-# DATE PARSER (🔥 ADDED ONLY THIS PART)
+# DATE PARSER
 # =====================================================
 def parse_dates_from_query(query: str):
     query = query.lower()
@@ -137,7 +137,6 @@ async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
     })
 
     filters = llm_output.get("filters", {})
-
     print(f"\n📋 [Feedback Search] Filters: {filters}")
 
     # CLEAN FILTERS
@@ -146,9 +145,7 @@ async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
         for k, v in filters.items()
     }
 
-    # =====================================================
-    # 🔥 DATE FIX (ADDED HERE ONLY)
-    # =====================================================
+    # DATE FIX
     date_fix = parse_dates_from_query(state["user_query"])
 
     if date_fix["fromdate"]:
@@ -165,9 +162,7 @@ async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
         print("⚠️ Fixing invalid date range")
         cleaned_filters["todate"] = datetime.today().strftime("%Y-%m-%d")
 
-    # =====================================================
-    # CATEGORY MAP (UNCHANGED)
-    # =====================================================
+    # CATEGORY MAP
     category_map = {
         "security": 1,
         "plumbing": 2,
@@ -177,7 +172,6 @@ async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
     }
 
     cat = cleaned_filters.get("category")
-
     if isinstance(cat, str):
         mapped = category_map.get(cat.lower())
         if mapped:
@@ -209,26 +203,25 @@ async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
             "response": {"message": str(e), "total": 0}
         }
 
-    # RESPONSE PARSE
+    # RAW RECORDS
     records = result_dict.get("data", [])
-
     formatted = []
 
     for r in records:
-        sub = r.get("submissions") or {}
+        submissions = dict(r.get("submissions") or {})
+        option = r.get("option") or submissions.get("getoption") or {}
+        user_info = r.get("user_info") or submissions.get("user") or {}
         unit_info = r.get("unit_info") or {}
-        user_info = r.get("user_info") or {}
+
+        # Keep the nested structure exactly like you want
+        submissions["getoption"] = option
+        submissions["user"] = user_info
 
         formatted.append({
-            "ticket": sub.get("ticket"),
-            "subject": sub.get("subject"),
-            "notes": sub.get("notes"),
-            "status": sub.get("status"),
-            "category": (sub.get("getoption") or {}).get("feedback_option"),
-            "unit": unit_info.get("unit"),
-            "block": unit_info.get("building"),
-            "user": user_info.get("name"),
-            "created_at": sub.get("created_at"),
+            "submissions": submissions,
+            "option": option,
+            "user_info": user_info,
+            "unit_info": unit_info
         })
 
     print(f"✅ Parsed {len(formatted)} feedback records")
@@ -236,20 +229,7 @@ async def feedback_search_node(state: FeedbackSearchState) -> Dict[str, Any]:
     return {
         **state,
         "response": {
-            "table": {
-                "columns": [
-                    "ticket",
-                    "subject",
-                    "notes",
-                    "status",
-                    "category",
-                    "unit",
-                    "block",
-                    "user",
-                    "created_at"
-                ],
-                "rows": formatted
-            },
+            "data": formatted,
             "total": len(formatted)
         }
     }

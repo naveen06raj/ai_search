@@ -70,7 +70,7 @@ class FacilitiesBookingSearchInput(BaseModel):
     todate: Optional[str] = None
     unit: Optional[str] = None
     status: Optional[int] = None
-    category: Optional[int] = None
+    category: Optional[int] = None   # type_id
     building: Optional[str] = None
 
     token: str
@@ -78,8 +78,22 @@ class FacilitiesBookingSearchInput(BaseModel):
 
 
 # =====================================================
-# DATE PARSER (🔥 NEW)
+# DATE PARSER
 # =====================================================
+MONTH_MAP = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "may": 5, "jun": 6, "jul": 7, "aug": 8,
+    "sep": 9, "oct": 10, "nov": 11, "dec": 12
+}
+
+def month_start_end(year: int, month: int):
+    start = datetime(year, month, 1)
+    if month == 12:
+        end = datetime(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        end = datetime(year, month + 1, 1) - timedelta(days=1)
+    return start, end
+
 def parse_dates_from_query(query: str):
     query = query.lower()
     today = datetime.today()
@@ -87,38 +101,54 @@ def parse_dates_from_query(query: str):
     fromdate = None
     todate = None
 
-    # today / now
     if any(word in query for word in ["today", "now", "still"]):
+        fromdate = today.replace(hour=0, minute=0, second=0, microsecond=0)
         todate = today
 
-    # yesterday
-    if "yesterday" in query:
-        fromdate = today - timedelta(days=1)
-        todate = fromdate
+    elif "yesterday" in query:
+        fromdate = (today - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        todate = today
 
-    # last 7 days
-    if "last 7 days" in query:
+    elif "last 7 days" in query:
         fromdate = today - timedelta(days=7)
         todate = today
 
-    # last month
-    if "last month" in query:
-        first_day_this_month = today.replace(day=1)
-        last_day_last_month = first_day_this_month - timedelta(days=1)
-        fromdate = last_day_last_month.replace(day=1)
-        todate = last_day_last_month
+    elif any(word in query for word in ["this month", "current month"]):
+        fromdate = datetime(today.year, today.month, 1)
+        todate = today
 
-    # jan 2026
-    match = re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s*(\d{4})", query)
-    if match:
-        month_str, year = match.groups()
-        month_map = {
-            "jan": 1, "feb": 2, "mar": 3, "apr": 4,
-            "may": 5, "jun": 6, "jul": 7, "aug": 8,
-            "sep": 9, "oct": 10, "nov": 11, "dec": 12
-        }
-        month = month_map[month_str]
-        fromdate = datetime(int(year), month, 1)
+    elif any(word in query for word in ["last month", "previous month"]):
+        year = today.year
+        month = today.month - 1
+        if month == 0:
+            month = 12
+            year -= 1
+        fromdate, todate = month_start_end(year, month)
+
+    elif any(word in query for word in [
+        "last 3 months",
+        "last three months",
+        "recent months",
+        "latest months"
+    ]):
+        year = today.year
+        month = today.month - 2
+        while month <= 0:
+            month += 12
+            year -= 1
+        fromdate = datetime(year, month, 1)
+        todate = today
+
+    else:
+        match = re.search(
+            r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b(?:\s+month)?(?:\s+(\d{4}))?",
+            query
+        )
+        if match:
+            month_str, year_str = match.groups()
+            month = MONTH_MAP[month_str]
+            year = int(year_str) if year_str else today.year
+            fromdate, todate = month_start_end(year, month)
 
     return {
         "fromdate": fromdate.strftime("%Y-%m-%d") if fromdate else None,
@@ -143,7 +173,6 @@ async def get_facility_category_map(token: str, login_id: int) -> Dict[str, int]
         response = await client.post(url, data=payload, headers=headers)
 
     data = response.json()
-
     return {v.lower(): int(k) for k, v in data.get("options", {}).items()}
 
 
@@ -163,18 +192,15 @@ async def facilities_booking_search_node(state: FacilitiesBookingSearchState) ->
         llm_output = {"filters": {}}
 
     filters = llm_output.get("filters", {})
-
     print(f"\n📋 [Facility Booking] Filters: {filters}")
 
     # CLEAN
     cleaned_filters = {
-        k: v for k, v in filters.items()
-        if v not in ["null", None, ""]
+        k: None if v in ["null", None, ""] else v
+        for k, v in filters.items()
     }
 
-    # =====================================================
-    # 🔥 DATE FIX (IMPORTANT)
-    # =====================================================
+    # DATE FIX
     date_fix = parse_dates_from_query(state["user_query"])
 
     if date_fix["fromdate"]:
@@ -191,9 +217,7 @@ async def facilities_booking_search_node(state: FacilitiesBookingSearchState) ->
         print("⚠️ Fixing invalid date range")
         cleaned_filters["todate"] = datetime.today().strftime("%Y-%m-%d")
 
-    # =====================================================
     # CATEGORY FIX
-    # =====================================================
     try:
         category_map = await get_facility_category_map(
             state.get("token"),
@@ -201,7 +225,6 @@ async def facilities_booking_search_node(state: FacilitiesBookingSearchState) ->
         )
 
         cat = cleaned_filters.get("category")
-
         if isinstance(cat, str):
             cat_lower = cat.lower()
 
@@ -217,9 +240,7 @@ async def facilities_booking_search_node(state: FacilitiesBookingSearchState) ->
 
     print(f"🧹 Cleaned Filters: {cleaned_filters}")
 
-    # =====================================================
     # API CALL
-    # =====================================================
     try:
         result_obj = await search_facilities_booking(
             FacilitiesBookingSearchInput(
@@ -237,40 +258,30 @@ async def facilities_booking_search_node(state: FacilitiesBookingSearchState) ->
             "response": {"message": str(e), "total": 0}
         }
 
-    # =====================================================
     # FORMAT RESPONSE
-    # =====================================================
     records = result_dict.get("data", [])
+    if not records and isinstance(result_dict.get("table"), dict):
+        records = result_dict.get("table", {}).get("rows", [])
 
     formatted = []
 
     for r in records:
-        sub = r.get("submissions") or {}
-        typ = r.get("type") or {}
-        unit = r.get("unit_info") or {}
-        user = r.get("user_info") or {}
+        submissions = r.get("submissions") or {}
+        facility_type = r.get("type") or {}
+        unit_info = r.get("unit_info") or {}
+        user_info = r.get("user_info") or {}
 
         formatted.append({
-            "booking_id": sub.get("id"),
-            "facility": typ.get("facility_type"),
-            "booking_date": sub.get("booking_date"),
-            "booking_time": sub.get("booking_time"),
-            "status": sub.get("status"),
-            "unit": unit.get("unit"),
-            "block": unit.get("building"),
-            "user": user.get("first_name"),
+            "submissions": submissions,
+            "type": facility_type,
+            "unit_info": unit_info,
+            "user_info": user_info
         })
 
     return {
         **state,
         "response": {
-            "table": {
-                "columns": [
-                    "booking_id", "facility", "booking_date",
-                    "booking_time", "status", "unit", "block", "user"
-                ],
-                "rows": formatted
-            },
+            "data": formatted,
             "total": len(formatted)
         }
     }

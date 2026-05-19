@@ -76,7 +76,7 @@ class SearchResponse(BaseModel):
     metadata: Dict[str, Any]
     timestamp: str
 
-    # Defect-only optional fields
+    # Optional fields for structured search responses
     chart: Optional[Dict[str, Any]] = None
     total: Optional[int] = None
     filter_applied: Optional[bool] = None
@@ -140,10 +140,10 @@ async def search_ai(request: SearchRequest):
         response_data = result.get("response") or {}
 
         # =====================================================
-        # DEFECT DOMAIN
+        # DEFECT / FEEDBACK / ANNOUNCEMENT / FACILITY DOMAIN
         # return array directly under "data"
         # =====================================================
-        if route == "defect_domain":
+        if route in {"defect_domain", "feedback_domain", "announcement_domain", "facility_booking_domain"}:
             if isinstance(response_data, dict):
                 final_data = response_data.get(
                     "data",
