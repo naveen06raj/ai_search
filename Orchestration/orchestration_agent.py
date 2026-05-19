@@ -1,4 +1,6 @@
 from typing import TypedDict, List, Dict, Any, Optional
+from datetime import datetime
+
 from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, END
@@ -24,6 +26,7 @@ class OrchestrationState(TypedDict):
 
     token: str
     login_id: int
+    session_id: Optional[str]
     current_module: Optional[str]
 
 
@@ -31,6 +34,10 @@ class OrchestrationState(TypedDict):
 llm = get_chat_model()
 route_prompt = get_route_prompt()
 intent_prompt = get_search_intent_prompt()
+
+
+# ------------------ SESSION MEMORY ------------------
+SESSION_MEMORY: Dict[str, Dict[str, Any]] = {}
 
 
 # ------------------ HELPERS ------------------
@@ -60,62 +67,137 @@ def route_to_module(route: str) -> Optional[str]:
     return mapping.get(route)
 
 
+def get_stored_module(session_id: Optional[str]) -> str:
+    if not session_id:
+        return ""
+    session_data = SESSION_MEMORY.get(session_id, {})
+    return (session_data.get("current_module") or "").lower().strip()
+
+
+def get_active_module(state: OrchestrationState) -> str:
+    current_module = (state.get("current_module") or "").lower().strip()
+    if current_module:
+        return current_module
+    return get_stored_module(state.get("session_id"))
+
+
+def is_followup_query(user_query: str) -> bool:
+    """
+    Short refinement queries that usually depend on the previous search.
+    """
+    q = (user_query or "").lower().strip()
+    if not q:
+        return False
+
+    followup_markers = [
+        "only",
+        "same",
+        "again",
+        "more",
+        "next",
+        "previous",
+        "latest",
+        "still",
+        "open ones",
+        "closed ones",
+        "pending ones",
+        "block ",
+        "unit ",
+        "status",
+        "till date",
+        "until date",
+        "for block",
+        "for unit",
+        "sort by",
+        "filter",
+        "need ",
+    ]
+
+    return any(marker in q for marker in followup_markers)
+
+
+def remember_successful_search(state: OrchestrationState, route: str) -> None:
+    session_id = state.get("session_id")
+    module = route_to_module(route)
+
+    if not session_id or not module:
+        return
+
+    SESSION_MEMORY[session_id] = {
+        "current_module": module,
+        "route": route,
+        "last_query": state.get("user_query", ""),
+        "updated_at": datetime.now().isoformat(),
+    }
+
+
 # ------------------ ORCHESTRATOR NODE ------------------
 def orchestration_node(state: OrchestrationState) -> OrchestrationState:
     user_query = state["user_query"]
+    session_id = state.get("session_id")
     current_module = (state.get("current_module") or "").lower().strip()
 
-    # 1) Detect intent first: search_query / general_question / unclear
-    intent_chain = intent_prompt | llm | StrOutputParser()
-    intent = intent_chain.invoke({
-        "user_query": user_query
-    }).strip().lower()
+    stored_module = get_stored_module(session_id)
+    active_module = current_module or stored_module
+    active_route = module_to_route(active_module)
 
-    print(f"\n🧠 [Orchestrator] Intent determined: {intent}")
-
-    # 2) If it is not a search request, always clarify
-    if intent in {"general_question", "unclear"}:
-        route = "clarify_query"
-        print(f"\n❓ [Orchestrator] Non-search question detected -> clarify_query")
+    # 1) If it looks like a follow-up, reuse the active module directly
+    if is_followup_query(user_query) and active_route:
+        route = active_route
+        print(f"\n🧠 [Orchestrator] Follow-up detected -> {route}")
 
     else:
-        # 3) If current module is known, validate that the query belongs to it
-        current_route = module_to_route(current_module)
+        # 2) Detect intent first
+        intent_chain = intent_prompt | llm | StrOutputParser()
+        intent = intent_chain.invoke({
+            "user_query": user_query
+        }).strip().lower()
 
-        if current_route:
-            # Ask LLM to detect the actual domain for the query
-            route_chain = route_prompt | llm | StrOutputParser()
-            detected_route = route_chain.invoke({
-                "user_query": user_query,
-                "chat_history": state.get("chat_history", [])
-            }).strip().lower()
+        print(f"\n🧠 [Orchestrator] Intent determined: {intent}")
 
-            if detected_route == "general_response":
-                detected_route = "clarify_query"
+        # 3) If it is not a search request, clarify
+        if intent in {"general_question", "unclear"}:
+            route = "clarify_query"
+            print(f"\n❓ [Orchestrator] Non-search question detected -> clarify_query")
 
-            print(f"\n🎯 [Orchestrator] Current module detected: {current_module} -> {current_route}")
-            print(f"🎯 [Orchestrator] Query detected route: {detected_route}")
-
-            # 4) If user asks for a different module, block it
-            if detected_route != current_route:
-                route = "clarify_query"
-                print(f"\n⚠️ [Orchestrator] Module mismatch -> clarify_query")
-            else:
-                route = current_route
-                print(f"\n✅ [Orchestrator] Module matches query -> {route}")
-
-        # 5) No module context, fall back to normal routing
         else:
-            chain = route_prompt | llm | StrOutputParser()
-            route = chain.invoke({
-                "user_query": user_query,
-                "chat_history": state.get("chat_history", [])
-            }).strip().lower()
+            # 4) If module context exists, compare query with module
+            if active_route:
+                route_chain = route_prompt | llm | StrOutputParser()
+                detected_route = route_chain.invoke({
+                    "user_query": user_query,
+                    "chat_history": state.get("chat_history", [])
+                }).strip().lower()
 
-            if route == "general_response":
-                route = "clarify_query"
+                if detected_route == "general_response":
+                    detected_route = "clarify_query"
 
-            print(f"\n🎯 [Orchestrator] Route determined by LLM: {route}")
+                print(f"\n🎯 [Orchestrator] Active module detected: {active_module} -> {active_route}")
+                print(f"🎯 [Orchestrator] Query detected route: {detected_route}")
+
+                # If query is vague and active module exists, keep active module for search-style refinements
+                if detected_route == "clarify_query" and is_followup_query(user_query):
+                    route = active_route
+                    print(f"\n✅ [Orchestrator] Vague follow-up treated as {route}")
+                elif detected_route != active_route:
+                    route = "clarify_query"
+                    print(f"\n⚠️ [Orchestrator] Module mismatch -> clarify_query")
+                else:
+                    route = active_route
+                    print(f"\n✅ [Orchestrator] Module matches query -> {route}")
+
+            # 5) No module context, normal routing
+            else:
+                chain = route_prompt | llm | StrOutputParser()
+                route = chain.invoke({
+                    "user_query": user_query,
+                    "chat_history": state.get("chat_history", [])
+                }).strip().lower()
+
+                if route == "general_response":
+                    route = "clarify_query"
+
+                print(f"\n🎯 [Orchestrator] Route determined by LLM: {route}")
 
     return {
         "user_query": user_query,
@@ -130,7 +212,8 @@ def orchestration_node(state: OrchestrationState) -> OrchestrationState:
         "response": state.get("response", {}),
         "token": state.get("token"),
         "login_id": state.get("login_id"),
-        "current_module": current_module
+        "session_id": session_id,
+        "current_module": active_module,
     }
 
 
@@ -159,22 +242,23 @@ def route_decision(state: OrchestrationState):
 async def defect_domain_node(state: OrchestrationState):
     print(f"\n🚀 [Orchestrator] Entering Defect Domain for: {state['user_query']}")
 
-    defect_router_input = {
+    defect_input = {
         "user_query": state["user_query"],
         "chat_history": state.get("chat_history", []),
         "token": state.get("token"),
-        "login_id": state.get("login_id")
+        "login_id": state.get("login_id"),
     }
 
-    
-    defect_result = await defect_search_graph.ainvoke(defect_router_input)
+    defect_result = await defect_search_graph.ainvoke(defect_input)
 
     print(f"✅ [Orchestrator] Defect Domain completed, response ready")
+
+    remember_successful_search(state, "defect_domain")
 
     return {
         **state,
         "defect_action": defect_result.get("defect_action", ""),
-        "response": defect_result.get("response", {})
+        "response": defect_result.get("response", {}),
     }
 
 
@@ -190,17 +274,19 @@ async def feedback_domain_node(state: OrchestrationState):
         "user_query": state["user_query"],
         "chat_history": state.get("chat_history", []),
         "token": state.get("token"),
-        "login_id": state.get("login_id")
+        "login_id": state.get("login_id"),
     }
 
     result = await feedback_search_graph.ainvoke(feedback_input)
 
     print(f"✅ [Orchestrator] Feedback Domain completed")
 
+    remember_successful_search(state, "feedback_domain")
+
     return {
         **state,
         "feedback_action": result.get("feedback_action", ""),
-        "response": result.get("response", {})
+        "response": result.get("response", {}),
     }
 
 
@@ -211,17 +297,19 @@ async def facility_booking_domain_node(state: OrchestrationState):
         "user_query": state["user_query"],
         "chat_history": state.get("chat_history", []),
         "token": state.get("token"),
-        "login_id": state.get("login_id")
+        "login_id": state.get("login_id"),
     }
 
     result = await facilities_search_graph.ainvoke(facility_input)
 
     print(f"✅ [Orchestrator] Facility Domain completed")
 
+    remember_successful_search(state, "facility_booking_domain")
+
     return {
         **state,
         "facility_action": result.get("facility_action", ""),
-        "response": result.get("response", {})
+        "response": result.get("response", {}),
     }
 
 
@@ -232,24 +320,26 @@ async def announcement_domain_node(state: OrchestrationState):
         "user_query": state["user_query"],
         "chat_history": state.get("chat_history", []),
         "token": state.get("token"),
-        "login_id": state.get("login_id")
+        "login_id": state.get("login_id"),
     }
 
     result = await announcement_search_graph.ainvoke(announcement_input)
 
     print(f"✅ [Orchestrator] Announcement Domain completed")
 
+    remember_successful_search(state, "announcement_domain")
+
     return {
         **state,
         "announcement_action": result.get("announcement_action", ""),
-        "response": result.get("response", {})
+        "response": result.get("response", {}),
     }
 
 
 async def clarify_query_node(state: OrchestrationState):
     print(f"\n❓ [Orchestrator] Asking for clarification")
 
-    current_module = (state.get("current_module") or "").lower().strip()
+    active_module = get_active_module(state)
 
     module_message_map = {
         "defect": "This is for defect search only. Please ask only defect-related questions.",
@@ -259,7 +349,7 @@ async def clarify_query_node(state: OrchestrationState):
     }
 
     message = module_message_map.get(
-        current_module,
+        active_module,
         "I can help only with module search questions. Please ask a filter or search question."
     )
 

@@ -124,7 +124,8 @@ async def search_ai(request: SearchRequest):
             "chat_history": [],
             "token": request.token,
             "login_id": request.login_id,
-            "current_module": request.current_module
+            "current_module": request.current_module,
+            "session_id": request.session_id,
         }
 
         # Timeout protection
